@@ -10,6 +10,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import javax.swing.JTable;
 import javax.swing.table.DefaultTableModel;
 
@@ -17,6 +19,7 @@ import javax.swing.table.DefaultTableModel;
  * Generador PDF simple sin dependencias externas.
  */
 public final class PdfReportWriter {
+    private static final Logger LOGGER = Logger.getLogger(PdfReportWriter.class.getName());
     private PdfReportWriter() {
     }
 
@@ -152,6 +155,7 @@ public final class PdfReportWriter {
             writeIso(out, "\n%%EOF");
             return out.toByteArray();
         } catch (IOException ex) {
+            LOGGER.log(Level.SEVERE, "No se pudo construir el PDF en memoria.", ex);
             throw new IllegalStateException("No se pudo construir el PDF en memoria.", ex);
         }
     }

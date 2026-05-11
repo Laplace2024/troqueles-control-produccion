@@ -13,10 +13,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import javax.swing.JTable;
 import javax.swing.table.DefaultTableModel;
 
 public final class SpreadsheetCsv {
+    private static final Logger LOGGER = Logger.getLogger(SpreadsheetCsv.class.getName());
     private SpreadsheetCsv() {
     }
 
@@ -65,8 +68,14 @@ public final class SpreadsheetCsv {
                 return loadRowsWithCharset(file, charset);
             } catch (IOException ex) {
                 last = ex;
+                LOGGER.log(
+                    Level.FINE,
+                    "Fallo leyendo CSV con charset " + charset.name() + ": " + file.getAbsolutePath(),
+                    ex
+                );
             }
         }
+        LOGGER.log(Level.WARNING, "No se pudo leer CSV: {0}", file == null ? "(null)" : file.getAbsolutePath());
         throw last == null ? new IOException("No se pudo leer el CSV.") : last;
     }
 

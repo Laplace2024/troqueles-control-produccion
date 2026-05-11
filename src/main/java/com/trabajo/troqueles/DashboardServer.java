@@ -13,8 +13,11 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class DashboardServer {
+    private static final Logger LOGGER = Logger.getLogger(DashboardServer.class.getName());
     private static final int STOP_DELAY_SECONDS = 2;
 
     private final HttpServer server;
@@ -81,6 +84,7 @@ public class DashboardServer {
         try {
             action.run(exchange);
         } catch (Exception ex) {
+            LOGGER.log(Level.WARNING, "Error interno en endpoint dashboard: " + exchange.getRequestURI(), ex);
             if (!exchange.getResponseHeaders().containsKey("Content-Type")) {
                 exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
             }

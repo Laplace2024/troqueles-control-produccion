@@ -1,16 +1,78 @@
-# Build y salidas generadas
+# =============================
+# Java / Maven build
+# =============================
 target/
 out/
+build/
+bin/
 *.class
+*.jar
+*.war
+hs_err_pid*
+replay_pid*
 
-# Logs locales
+# =============================
+# Logs locales y autosave
+# =============================
 *.log
+autosave.csv
 
-# Datos privados/no publicables
+# =============================
+# Datos privados / operativos
+# (NO subir a un repositorio publico)
+# =============================
 clientes_codigos.csv
 clientes_import.csv
+clientes_*.csv
 cambios.log
 
-# Entorno IDE
+# Reportes generados por la app (PDF / HTML / CSV de exportacion).
+# Si quieres subir uno como demo, anadelo con `git add -f`.
+reporte_*.pdf
+reporte_*.html
+tabla_*.csv
+visible_*.csv
+
+# =============================
+# IDE / editores
+# =============================
+# IntelliJ IDEA
 .idea/
+*.iml
+*.iws
+*.ipr
+
+# VS Code
 .vscode/
+
+# Eclipse / RAD
+.classpath
+.project
+.settings/
+.factorypath
+.metadata/
+
+# NetBeans
+nbproject/private/
+nbbuild/
+nbdist/
+
+# Cursor / Copilot caches
+.cursor/
+
+# =============================
+# Sistemas operativos
+# =============================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+.directory

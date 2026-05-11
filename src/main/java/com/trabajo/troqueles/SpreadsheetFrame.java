@@ -11,7 +11,6 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.FontMetrics;
 import java.awt.GridLayout;
-import java.awt.Image;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
 import java.awt.event.FocusAdapter;
@@ -20,16 +19,12 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
-import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.net.URI;
-import java.text.Normalizer;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -39,9 +34,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.NavigableMap;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.Vector;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -68,7 +61,6 @@ import javax.swing.JTable;
 import javax.swing.JTextField;
 import javax.swing.CellEditor;
 import javax.swing.KeyStroke;
-import javax.swing.RowFilter;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
@@ -140,21 +132,8 @@ public class SpreadsheetFrame extends JFrame {
         W_GOMA, W_GTAM, W_HECHO
     };
 
-    /**
-     * Mapa de autocompletado por nombre de cliente.
-     * Clave: nombre normalizado (sin tildes, mayusculas y sufijos societarios finales).
-     * Valor: codigo de cliente.
-     */
-    private static final ClientMaps CLIENT_MAPS = buildClientMaps();
-    private static final Map<String, String> CLIENT_CODE_BY_NAME = CLIENT_MAPS.byName;
-    /** Mapa inverso para autocompletar nombre al escribir codigo. */
-    private static final Map<String, String> CLIENT_NAME_BY_CODE = CLIENT_MAPS.byCode;
-    /** Nombre canonico por nombre normalizado (corrige entradas en minuscula). */
-    private static final Map<String, String> CLIENT_CANONICAL_NAME_BY_NORMALIZED = CLIENT_MAPS.canonicalNameByNormalized;
-    /** Indice ordenado para sugerencias por prefijo de nombre. */
-    private static final NavigableMap<String, String> CLIENT_CANONICAL_NAME_SORTED = new TreeMap<String, String>(CLIENT_CANONICAL_NAME_BY_NORMALIZED);
-    /** Indice ordenado para sugerencias por prefijo de codigo. */
-    private static final NavigableMap<String, String> CLIENT_NAME_BY_CODE_SORTED = new TreeMap<String, String>(CLIENT_NAME_BY_CODE);
+    /** Servicio de lookup/autocompletado de cliente (carga opcional desde CSV local). */
+    private static final ClientLookup CLIENT_LOOKUP = ClientLookup.fromDefaultFiles();
 
     private final DefaultTableModel tableModel;
     private final transient List<JTable> dataTables = new ArrayList<JTable>();
@@ -162,6 +141,8 @@ public class SpreadsheetFrame extends JFrame {
     private JTable activeDataTable;
     private final transient SpreadsheetHistory history;
     private final transient ChangeLog changeLog = new ChangeLog(resolveChangeLogFile(), 1000);
+    private final transient SearchAndFilter searchAndFilter;
+    private final transient ToolbarActionRegistry toolbarActions;
     private transient DashboardServer dashboardServer;
 
     private JComboBox<String> searchScopeCombo;
@@ -194,12 +175,8 @@ public class SpreadsheetFrame extends JFrame {
 
     private final transient Map<Integer, String[]> dropdownOptionsByColumnIndex = new HashMap<Integer, String[]>();
 
-    private static final String IMAGE_COLUMN_NAME = "Imagen";
-    private static final int IMAGE_THUMB_HEIGHT = 56;
-    private static final int IMAGE_THUMB_MAX_WIDTH = 96;
-    private static final int IMAGE_ROW_HEIGHT = IMAGE_THUMB_HEIGHT + 8;
-    private static final int IMAGE_COLUMN_WIDTH = IMAGE_THUMB_MAX_WIDTH + 16;
-    private final transient Map<String, ImageIcon> imageThumbCache = new HashMap<String, ImageIcon>();
+    private static final String IMAGE_COLUMN_NAME = ImageColumnSupport.COLUMN_NAME;
+    private final transient ImageColumnSupport imageColumnSupport;
     private static final String WINDOW_TITLE_PREFIX = "Trabajo Troqueles - ";
     private static final String DEFAULT_SHEET_TITLE = "Hoja de Calculo";
     private static final String PREF_SHEET_TITLE_KEY = "sheetTitle";
@@ -277,6 +254,20 @@ public class SpreadsheetFrame extends JFrame {
         addInitialRows();
 
         JComponent center = buildDashboardTablesPanel();
+        searchAndFilter = new SearchAndFilter(
+            tableModel,
+            dataSorters,
+            dataTables,
+            this::getColumnIndexByName,
+            this::refreshTotalsLabel,
+            this
+        );
+        toolbarActions = new ToolbarActionRegistry();
+        imageColumnSupport = new ImageColumnSupport(
+            tableModel,
+            dataTables,
+            this::getColumnIndexByName
+        );
 
         history = new SpreadsheetHistory(50);
 
@@ -766,37 +757,7 @@ public class SpreadsheetFrame extends JFrame {
      * Devuelve null si el path es vacio o el archivo no existe / no se puede leer.
      */
     private ImageIcon loadImageThumb(String path) {
-        if (path == null || path.isEmpty()) {
-            return null;
-        }
-        ImageIcon cached = imageThumbCache.get(path);
-        if (cached != null) {
-            return cached;
-        }
-        File file = new File(path);
-        if (!file.isFile()) {
-            return null;
-        }
-        try {
-            ImageIcon raw = new ImageIcon(file.getAbsolutePath());
-            Image image = raw.getImage();
-            int srcW = image.getWidth(null);
-            int srcH = image.getHeight(null);
-            if (srcW <= 0 || srcH <= 0) {
-                return null;
-            }
-            double scale = (double) IMAGE_THUMB_HEIGHT / (double) srcH;
-            int targetW = (int) Math.round(srcW * scale);
-            if (targetW > IMAGE_THUMB_MAX_WIDTH) {
-                targetW = IMAGE_THUMB_MAX_WIDTH;
-            }
-            Image scaled = image.getScaledInstance(targetW, IMAGE_THUMB_HEIGHT, Image.SCALE_SMOOTH);
-            ImageIcon icon = new ImageIcon(scaled);
-            imageThumbCache.put(path, icon);
-            return icon;
-        } catch (Exception ex) {
-            return null;
-        }
+        return imageColumnSupport.loadImageThumb(path);
     }
 
     /**
@@ -972,16 +933,14 @@ public class SpreadsheetFrame extends JFrame {
     private JPanel buildTopActions() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT));
 
-        JButton addRowButton = new JButton("Agregar fila");
-        addRowButton.addActionListener(event -> {
+        JButton addRowButton = toolbarActions.newButton("add-row", "Agregar fila", () -> {
             stopEditingBeforeTableMutation();
             int modelRow = tableModel.getRowCount();
             tableModel.addRow(buildEmptyRowForCurrentModel());
             selectAndScrollToModelRow(modelRow);
         });
 
-        JButton deleteRowButton = new JButton("Eliminar fila seleccionada");
-        deleteRowButton.addActionListener(event -> deleteSelectedRow());
+        JButton deleteRowButton = toolbarActions.newButton("delete-row", "Eliminar fila seleccionada", this::deleteSelectedRow);
 
         JButton resetTableButton = new JButton("Reset tabla");
         resetTableButton.setToolTipText(
@@ -996,39 +955,19 @@ public class SpreadsheetFrame extends JFrame {
         addColumnRightButton.addActionListener(event -> addColumnRelativeToSelection(false));
 
         searchField = new JTextField(12);
-        searchField.getDocument().addDocumentListener(new DocumentListener() {
-            @Override
-            public void insertUpdate(DocumentEvent e) {
-                applyCombinedFilter();
-            }
-
-            @Override
-            public void removeUpdate(DocumentEvent e) {
-                applyCombinedFilter();
-            }
-
-            @Override
-            public void changedUpdate(DocumentEvent e) {
-                applyCombinedFilter();
-            }
-        });
         searchScopeCombo = new JComboBox<String>(new String[]{"Todo", "Cod. cliente", "Nombre", "Madera"});
-        searchScopeCombo.addActionListener(event -> applyCombinedFilter());
+        searchAndFilter.bindControls(searchField, searchScopeCombo, filterLabel);
+        searchAndFilter.installDefaultListeners();
 
         JButton searchHelpButton = new JButton("Ayuda busqueda");
-        searchHelpButton.addActionListener(event -> showSearchHelp());
+        searchHelpButton.addActionListener(event -> searchAndFilter.showSearchHelp());
 
         JButton clearFilterButton = new JButton("Limpiar filtros");
-        clearFilterButton.addActionListener(event -> {
-            searchField.setText("");
-            applyCombinedFilter();
-        });
+        clearFilterButton.addActionListener(event -> searchAndFilter.clearFilters());
 
-        JButton undoButton = new JButton("Deshacer");
-        undoButton.addActionListener(event -> undoHistory());
+        JButton undoButton = toolbarActions.newButton("undo", "Deshacer", this::undoHistory);
 
-        JButton redoButton = new JButton("Rehacer");
-        redoButton.addActionListener(event -> redoHistory());
+        JButton redoButton = toolbarActions.newButton("redo", "Rehacer", this::redoHistory);
 
         JButton historyButton = new JButton("Historial");
         historyButton.setToolTipText("Ver el historial de cambios realizados (con fecha y hora).");
@@ -1036,8 +975,7 @@ public class SpreadsheetFrame extends JFrame {
 
         JButton customColorsButton = new JButton("Colores personalizados");
         customColorsButton.addActionListener(event -> chooseCustomColors());
-        JButton renameSheetButton = new JButton("Renombrar hoja");
-        renameSheetButton.addActionListener(event -> promptRenameSheetTitle());
+        JButton renameSheetButton = toolbarActions.newButton("rename-sheet", "Renombrar hoja", this::promptRenameSheetTitle);
         JButton sheetDateTimeButton = new JButton("Titulo + fecha");
         sheetDateTimeButton.addActionListener(event -> applySheetTitleWithDateTime());
         JButton resetSheetTitleButton = new JButton("Titulo por defecto");
@@ -1058,20 +996,15 @@ public class SpreadsheetFrame extends JFrame {
         JButton dropdownExportButton = new JButton("Exportar desplegables");
         dropdownExportButton.addActionListener(event -> exportDropdownsSummaryToCsv());
 
-        JButton exportVisibleButton = new JButton("Exportar CSV");
-        exportVisibleButton.addActionListener(event -> exportVisibleRowsToCsv());
+        JButton exportVisibleButton = toolbarActions.newButton("save-visible", "Exportar CSV", this::exportVisibleRowsToCsv);
 
-        JButton openDashboardButton = new JButton("Abrir dashboard");
-        openDashboardButton.addActionListener(event -> openDashboardWithCurrentData());
+        JButton openDashboardButton = toolbarActions.newButton("open-dashboard", "Abrir dashboard", this::openDashboardWithCurrentData);
 
-        JButton saveAllButton = new JButton("Guardar tabla");
-        saveAllButton.addActionListener(event -> saveAllRowsToCsv());
+        JButton saveAllButton = toolbarActions.newButton("save-all", "Guardar tabla", this::saveAllRowsToCsv);
 
-        JButton loadButton = new JButton("Cargar tabla");
-        loadButton.addActionListener(event -> loadRowsFromCsv());
+        JButton loadButton = toolbarActions.newButton("load-csv", "Cargar tabla", this::loadRowsFromCsv);
 
-        JButton htmlReportButton = new JButton("Exportar reporte HTML");
-        htmlReportButton.addActionListener(event -> exportHtmlReport());
+        JButton htmlReportButton = toolbarActions.newButton("export-html", "Exportar reporte HTML", this::exportHtmlReport);
         JButton pdfReportButton = new JButton("Exportar reporte PDF");
         pdfReportButton.addActionListener(event -> exportPdfReport());
         JButton clientStatsButton = new JButton("Stats clientes");
@@ -1098,6 +1031,16 @@ public class SpreadsheetFrame extends JFrame {
             "Exportar desplegables CSV"
         });
         quickDataMenu.addActionListener(event -> handleQuickDataSelection(quickDataMenu));
+
+        // Acciones sin boton directo en toolbar pero compartidas por atajos.
+        toolbarActions.register("focus-search", "Focus search", () -> {
+            if (searchField != null) {
+                searchField.requestFocusInWindow();
+                searchField.selectAll();
+            }
+        });
+        toolbarActions.register("duplicate-row", "Duplicate row", this::duplicateSelectedRow);
+        toolbarActions.register("user-manual", "User manual", this::showUserManual);
 
         panel.add(addRowButton);
         panel.add(deleteRowButton);
@@ -1364,6 +1307,7 @@ public class SpreadsheetFrame extends JFrame {
         clientHintLabel.setHorizontalAlignment(SwingConstants.LEFT);
         filterLabel = new JLabel("Busqueda: (vacia)");
         filterLabel.setHorizontalAlignment(SwingConstants.LEFT);
+        searchAndFilter.bindControls(searchField, searchScopeCombo, filterLabel);
         totalsLabel = new JLabel("Totales: pendientes");
         totalsLabel.setHorizontalAlignment(SwingConstants.LEFT);
         validationLabel = new JLabel("Validacion: sin revisar");
@@ -1807,7 +1751,7 @@ public class SpreadsheetFrame extends JFrame {
         }
 
         String imagePath = chooser.getSelectedFile().getAbsolutePath();
-        imageThumbCache.remove(imagePath);
+        imageColumnSupport.removeFromCache(imagePath);
         tableModel.setValueAt(imagePath, modelRow, imageColumnIndex);
         applyImageColumnSizing();
         adjustRowHeightForImage(modelRow);
@@ -1840,66 +1784,17 @@ public class SpreadsheetFrame extends JFrame {
 
     /** Asegura ancho minimo de la columna Imagen en todas las JTable activas. */
     private void applyImageColumnSizing() {
-        int modelCol = getColumnIndexByName(IMAGE_COLUMN_NAME);
-        if (modelCol < 0) {
-            return;
-        }
-        for (JTable t : dataTables) {
-            int viewCol = t.convertColumnIndexToView(modelCol);
-            if (viewCol < 0) {
-                continue;
-            }
-            javax.swing.table.TableColumn tc = t.getColumnModel().getColumn(viewCol);
-            tc.setPreferredWidth(IMAGE_COLUMN_WIDTH);
-            tc.setMinWidth(IMAGE_COLUMN_WIDTH);
-        }
+        imageColumnSupport.applyImageColumnSizing();
     }
 
     /** Ajusta la altura de la fila concreta para que quepa la miniatura. */
     private void adjustRowHeightForImage(int modelRow) {
-        for (JTable t : dataTables) {
-            int viewRow = t.convertRowIndexToView(modelRow);
-            if (viewRow < 0) {
-                continue;
-            }
-            if (t.getRowHeight(viewRow) < IMAGE_ROW_HEIGHT) {
-                t.setRowHeight(viewRow, IMAGE_ROW_HEIGHT);
-            }
-        }
-    }
-
-    /** Devuelve la altura por defecto de fila para reset cuando la celda Imagen queda vacia. */
-    private int defaultRowHeightForTable(JTable table) {
-        return table == null ? 24 : Math.max(20, table.getFont().getSize() + 12);
-    }
-
-    /**
-     * Encoge la fila a la altura por defecto. Se usa cuando se borra el path de la imagen
-     * para evitar que la fila siga ocupando el espacio reservado para la miniatura.
-     */
-    private void resetRowHeightForRow(int modelRow) {
-        for (JTable t : dataTables) {
-            int viewRow = t.convertRowIndexToView(modelRow);
-            if (viewRow < 0) {
-                continue;
-            }
-            t.setRowHeight(viewRow, defaultRowHeightForTable(t));
-        }
+        imageColumnSupport.adjustRowHeightForImage(modelRow);
     }
 
     /** Recorre la columna Imagen y ajusta la altura de las filas que tengan path no vacio. */
     private void adjustRowHeightsForExistingImages() {
-        int modelCol = getColumnIndexByName(IMAGE_COLUMN_NAME);
-        if (modelCol < 0) {
-            return;
-        }
-        for (int r = 0; r < tableModel.getRowCount(); r++) {
-            Object value = tableModel.getValueAt(r, modelCol);
-            String path = value == null ? "" : String.valueOf(value).trim();
-            if (!path.isEmpty()) {
-                adjustRowHeightForImage(r);
-            }
-        }
+        imageColumnSupport.adjustRowHeightsForExistingImages();
     }
 
     private void configureDropdownForSelectedColumn() {
@@ -2074,78 +1969,11 @@ public class SpreadsheetFrame extends JFrame {
     }
 
     private void applyCombinedFilter() {
-        if (dataSorters.isEmpty()) {
-            return;
-        }
-        String searchText = searchField == null ? "" : searchField.getText().trim();
-        String searchScope = searchScopeCombo == null ? "Todo" : (String) searchScopeCombo.getSelectedItem();
-        if (searchText.isEmpty()) {
-            dataSorters.get(0).setRowFilter(null);
-        } else {
-            dataSorters.get(0).setRowFilter(buildSearchFilter(searchScope, searchText));
-        }
-        if (filterLabel != null) {
-            filterLabel.setText(
-                "Busqueda[" + (searchScope == null ? "Todo" : searchScope) + "]: "
-                    + (searchText.isEmpty() ? "(vacia)" : searchText)
-            );
-        }
-        if (dataTables.size() > 0) {
-            dataTables.get(0).repaint();
-        }
-        refreshTotalsLabel();
-    }
-
-    private RowFilter<Object, Object> buildSearchFilter(String scope, String query) {
-        final String selectedScope = scope == null ? "Todo" : scope;
-        final String normalizedQuery = query == null ? "" : query.trim();
-        return new RowFilter<Object, Object>() {
-            @Override
-            public boolean include(Entry<? extends Object, ? extends Object> entry) {
-                int modelRow = (Integer) entry.getIdentifier();
-                return rowMatchesSearch(modelRow, selectedScope, normalizedQuery);
-            }
-        };
-    }
-
-    private boolean rowMatchesSearch(int modelRow, String scope, String query) {
-        if (query.isEmpty()) {
-            return true;
-        }
-        String normalizedScope = scope == null ? "Todo" : scope;
-        String q = query.toLowerCase(Locale.ROOT);
-
-        if (!"Todo".equalsIgnoreCase(normalizedScope)) {
-            int targetColumn = getColumnIndexByName(normalizedScope);
-            if (targetColumn < 0) {
-                return false;
-            }
-            Object valueObj = tableModel.getValueAt(modelRow, targetColumn);
-            String valueText = valueObj == null ? "" : valueObj.toString().toLowerCase(Locale.ROOT);
-            return valueText.contains(q);
-        }
-
-        for (int col = 0; col < tableModel.getColumnCount(); col++) {
-            Object valueObj = tableModel.getValueAt(modelRow, col);
-            String valueText = valueObj == null ? "" : valueObj.toString().toLowerCase(Locale.ROOT);
-            if (valueText.contains(q)) {
-                return true;
-            }
-        }
-        return false;
+        searchAndFilter.applyCombinedFilter();
     }
 
     private void showSearchHelp() {
-        JOptionPane.showMessageDialog(
-            this,
-            "Busqueda:\n\n"
-                + "- 'En: Todo' busca en toda la fila.\n"
-                + "- 'En: Cod. cliente' filtra por codigo de cliente.\n"
-                + "- 'En: Nombre' filtra por nombre del cliente.\n"
-                + "- 'En: Madera' filtra por el tamano de madera.",
-            "Ayuda de busqueda",
-            JOptionPane.INFORMATION_MESSAGE
-        );
+        searchAndFilter.showSearchHelp();
     }
 
     private void calculateStats() {
@@ -2457,216 +2285,29 @@ public class SpreadsheetFrame extends JFrame {
         }
     }
 
-    private static final class ClientMaps {
-        private final Map<String, String> byName = new HashMap<String, String>();
-        private final Map<String, String> byCode = new HashMap<String, String>();
-        private final Map<String, String> canonicalNameByNormalized = new HashMap<String, String>();
-    }
-
-    /**
-     * Construye el mapa de clientes leyendo unicamente desde el CSV externo opcional
-     * ({@code clientes_codigos.csv} o {@code clientes_import.csv}). El listado real no
-     * forma parte del repositorio publico para no exponer datos comerciales; si no existe
-     * ningun fichero, los mapas quedan vacios y la app sigue funcionando sin autocompletado.
-     */
-    private static ClientMaps buildClientMaps() {
-        ClientMaps maps = new ClientMaps();
-        loadClientCodeMapFromCsv(maps, new File("clientes_codigos.csv"));
-        if (!maps.byName.isEmpty()) {
-            return maps;
-        }
-        loadClientCodeMapFromCsv(maps, new File("clientes_import.csv"));
-        return maps;
-    }
-
-    private static void loadClientCodeMapFromCsv(ClientMaps maps, File csvFile) {
-        if (csvFile == null || !csvFile.exists() || !csvFile.isFile()) {
-            return;
-        }
-        Charset[] charsets = new Charset[]{StandardCharsets.UTF_8, Charset.forName("windows-1252")};
-        for (Charset charset : charsets) {
-            maps.byName.clear();
-            maps.byCode.clear();
-            maps.canonicalNameByNormalized.clear();
-            boolean replacementDetected = false;
-            try (BufferedReader reader = new BufferedReader(new FileReader(csvFile, charset))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    String[] values = parseClientCodeLine(line);
-                    if (values.length < 2) {
-                        continue;
-                    }
-                    String code = values[0] == null ? "" : values[0].trim();
-                    String name = cleanClientDisplayName(values[1]);
-                    if (name.indexOf('\uFFFD') >= 0) {
-                        replacementDetected = true;
-                    }
-                    String normalizedCode = normalizeClientCode(code);
-                    if (normalizedCode.isEmpty() || name.isEmpty()) {
-                        continue;
-                    }
-                    registerClientCode(maps, normalizedCode, name);
-                }
-                if (!replacementDetected && !maps.byName.isEmpty()) {
-                    return;
-                }
-            } catch (IOException ignored) {
-                // Intenta con el siguiente charset.
-            }
-        }
-    }
-
-    private static String[] parseClientCodeLine(String line) {
-        if (line == null) {
-            return new String[0];
-        }
-        String trimmed = line.trim();
-        if (trimmed.isEmpty()) {
-            return new String[0];
-        }
-        int semicolon = trimmed.indexOf(';');
-        if (semicolon > 0) {
-            String code = trimmed.substring(0, semicolon).trim();
-            String name = trimmed.substring(semicolon + 1).trim();
-            return new String[]{code, name};
-        }
-        return CsvUtils.parseCsvLine(trimmed);
-    }
-
-    private static void registerClientCode(ClientMaps maps, String code, String name) {
-        String cleanName = cleanClientDisplayName(name);
-        String normalized = normalizeClientNameForLookup(cleanName);
-        if (!normalized.isEmpty()) {
-            maps.byName.put(normalized, code);
-            maps.canonicalNameByNormalized.put(normalized, cleanName);
-        }
-        String normalizedCode = normalizeClientCode(code);
-        if (!normalizedCode.isEmpty() && !cleanName.isEmpty()) {
-            maps.byCode.put(normalizedCode, cleanName);
-        }
-    }
-
-    private static String cleanClientDisplayName(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String text = raw.trim();
-        if (text.startsWith("\uFEFF")) {
-            text = text.substring(1).trim();
-        }
-        text = text.replace('\u00A0', ' ');
-        text = text.replaceAll("^[^\\p{L}\\p{N}]+", "");
-        text = text.replaceAll("\\s+", " ").trim();
-        return text;
-    }
-
+    // Wrappers de compatibilidad para tests existentes (reflexion) y puntos de uso internos.
     private static String normalizeClientCode(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String code = raw.trim();
-        if (code.startsWith("\uFEFF")) {
-            code = code.substring(1).trim();
-        }
-        code = code.replaceAll("[^0-9]", "");
-        if (code.isEmpty()) {
-            return "";
-        }
-        code = code.replaceFirst("^0+(?!$)", "");
-        return code;
+        return ClientLookup.normalizeClientCode(raw);
     }
 
     private static String normalizeClientNameForLookup(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String value = raw.trim().toLowerCase(Locale.ROOT);
-        if (value.isEmpty()) {
-            return "";
-        }
-        value = Normalizer.normalize(value, Normalizer.Form.NFD).replaceAll("\\p{M}+", "");
-        value = value.replace('&', ' ');
-        value = value.replaceAll("[^a-z0-9 ]+", " ");
-        value = value.replaceAll("\\s+", " ").trim();
-
-        // Elimina sufijos legales comunes al final (S.L., S.A., C.B., etc.).
-        String legalSuffixRegex =
-            "(?:"
-                + "s l l|s l u|s l v|s l p|s l|sl|slu|sll|slv|slp|"
-                + "sociedad limitada|sociedad anonima|"
-                + "s a l|s a u|s a|sa|sau|"
-                + "s c a|s c o o p and|s coop and|s coop andaluza|s c|sc|"
-                + "c b|cb"
-            + ")$";
-        String previous;
-        do {
-            previous = value;
-            value = value.replaceAll("\\s+" + legalSuffixRegex, "").trim();
-        } while (!value.equals(previous));
-
-        return value;
+        return ClientLookup.normalizeClientNameForLookup(raw);
     }
 
     private String findClientCodeByName(String rawName) {
-        String normalized = normalizeClientNameForLookup(rawName);
-        if (normalized.isEmpty()) {
-            return null;
-        }
-        String code = CLIENT_CODE_BY_NAME.get(normalized);
-        if (code != null) {
-            return code;
-        }
-
-        // Fallback: si el usuario pega nombre largo con direccion, intenta por prefijo.
-        for (Map.Entry<String, String> entry : CLIENT_CODE_BY_NAME.entrySet()) {
-            String key = entry.getKey();
-            if (normalized.startsWith(key + " ") || normalized.equals(key)) {
-                return entry.getValue();
-            }
-        }
-        return null;
+        return CLIENT_LOOKUP.findClientCodeByName(rawName);
     }
 
     private String findCanonicalClientNameByName(String rawName) {
-        String normalized = normalizeClientNameForLookup(rawName);
-        if (normalized.isEmpty()) {
-            return null;
-        }
-        String canonical = CLIENT_CANONICAL_NAME_BY_NORMALIZED.get(normalized);
-        if (canonical != null) {
-            return canonical;
-        }
-        for (Map.Entry<String, String> entry : CLIENT_CANONICAL_NAME_BY_NORMALIZED.entrySet()) {
-            String key = entry.getKey();
-            if (normalized.startsWith(key + " ") || normalized.equals(key)) {
-                return entry.getValue();
-            }
-        }
-        return null;
+        return CLIENT_LOOKUP.findCanonicalClientNameByName(rawName);
     }
 
     private String suggestClientByName(String rawName) {
-        String normalized = normalizeClientNameForLookup(rawName);
-        if (normalized.isEmpty()) {
-            return null;
-        }
-        Map.Entry<String, String> ceiling = CLIENT_CANONICAL_NAME_SORTED.ceilingEntry(normalized);
-        if (ceiling != null && ceiling.getKey().startsWith(normalized)) {
-            return ceiling.getValue();
-        }
-        return null;
+        return CLIENT_LOOKUP.suggestClientByName(rawName);
     }
 
     private String suggestClientByCode(String rawCode) {
-        String normalizedCode = normalizeClientCode(rawCode);
-        if (normalizedCode.isEmpty()) {
-            return null;
-        }
-        Map.Entry<String, String> ceiling = CLIENT_NAME_BY_CODE_SORTED.ceilingEntry(normalizedCode);
-        if (ceiling == null || !ceiling.getKey().startsWith(normalizedCode)) {
-            return null;
-        }
-        return ceiling.getKey() + " - " + ceiling.getValue();
+        return CLIENT_LOOKUP.suggestClientByCode(rawCode);
     }
 
     private void updateClientSuggestionHint(TableModelEvent event) {
@@ -2730,11 +2371,7 @@ public class SpreadsheetFrame extends JFrame {
     }
 
     private String findClientNameByCode(String rawCode) {
-        String normalized = normalizeClientCode(rawCode);
-        if (normalized.isEmpty()) {
-            return null;
-        }
-        return CLIENT_NAME_BY_CODE.get(normalized);
+        return CLIENT_LOOKUP.findClientNameByCode(rawCode);
     }
 
     private void tryAutoFillClientCode(TableModelEvent event) {
@@ -2798,29 +2435,7 @@ public class SpreadsheetFrame extends JFrame {
      * el cache de miniaturas para que el renderer recargue desde disco si el path apunta a otro fichero.
      */
     private void handleImageCellUpdate(TableModelEvent event) {
-        if (event == null || event.getType() != TableModelEvent.UPDATE) {
-            return;
-        }
-        int col = event.getColumn();
-        if (col == TableModelEvent.ALL_COLUMNS) {
-            return;
-        }
-        int imageCol = columnIndexOf(IMAGE_COLUMN_NAME);
-        if (imageCol < 0 || col != imageCol) {
-            return;
-        }
-        int row = event.getFirstRow();
-        if (row < 0 || row >= tableModel.getRowCount()) {
-            return;
-        }
-        Object raw = tableModel.getValueAt(row, imageCol);
-        String path = raw == null ? "" : String.valueOf(raw).trim();
-        if (path.isEmpty()) {
-            resetRowHeightForRow(row);
-        } else {
-            imageThumbCache.remove(path);
-            adjustRowHeightForImage(row);
-        }
+        imageColumnSupport.handleImageCellUpdate(event);
     }
 
     /**
@@ -3087,108 +2702,7 @@ public class SpreadsheetFrame extends JFrame {
     }
 
     private void installKeyboardShortcuts() {
-        JComponent root = getRootPane();
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("control N"), "add-row");
-        root.getActionMap().put("add-row", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                stopEditingBeforeTableMutation();
-                int modelRow = tableModel.getRowCount();
-                tableModel.addRow(buildEmptyRowForCurrentModel());
-                selectAndScrollToModelRow(modelRow);
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("DELETE"), "delete-row");
-        root.getActionMap().put("delete-row", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                deleteSelectedRow();
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("control Z"), "undo");
-        root.getActionMap().put("undo", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                undoHistory();
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("control Y"), "redo");
-        root.getActionMap().put("redo", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                redoHistory();
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("control S"), "save-all");
-        root.getActionMap().put("save-all", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                saveAllRowsToCsv();
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("control shift S"), "save-visible");
-        root.getActionMap().put("save-visible", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                exportVisibleRowsToCsv();
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("control O"), "load-csv");
-        root.getActionMap().put("load-csv", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                loadRowsFromCsv();
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("control E"), "export-html");
-        root.getActionMap().put("export-html", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                exportHtmlReport();
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("control F"), "focus-search");
-        root.getActionMap().put("focus-search", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                searchField.requestFocusInWindow();
-                searchField.selectAll();
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("F2"), "rename-sheet");
-        root.getActionMap().put("rename-sheet", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                promptRenameSheetTitle();
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("control D"), "open-dashboard");
-        root.getActionMap().put("open-dashboard", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                openDashboardWithCurrentData();
-            }
-        });
-
-        root.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("F1"), "manual");
-        root.getActionMap().put("manual", new javax.swing.AbstractAction() {
-            @Override
-            public void actionPerformed(java.awt.event.ActionEvent e) {
-                showUserManual();
-            }
-        });
-
+        ShortcutBindingsInstaller.install(getRootPane(), toolbarActions);
     }
 
     private void installClickShortcuts() {
