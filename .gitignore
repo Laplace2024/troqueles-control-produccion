@@ -1,0 +1,16 @@
+# Build y salidas generadas
+target/
+out/
+*.class
+
+# Logs locales
+*.log
+
+# Datos privados/no publicables
+clientes_codigos.csv
+clientes_import.csv
+cambios.log
+
+# Entorno IDE
+.idea/
+.vscode/
