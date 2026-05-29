@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trabajo Troqueles - Dashboard</title>
+  <link rel="stylesheet" href="styles.css?v=3">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="logo-dot"></div>
+        <div>
+          <h1>Trabajo Troqueles</h1>
+          <p>Project Tracker · Vista tipo Airtable</p>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="ghost-btn" type="button">Ayuda</button>
+        <button class="ghost-btn" type="button">Compartir</button>
+        <label class="upload-btn">
+          <input id="csvFile" type="file" accept=".csv">
+          Cargar CSV
+        </label>
+      </div>
+    </header>
+
+    <section class="toolbar">
+      <button class="tool-btn" type="button">Vista principal</button>
+      <button class="tool-btn" type="button">Filtrar</button>
+      <button class="tool-btn" type="button">Agrupar</button>
+      <button class="tool-btn" type="button">Ordenar</button>
+      <button class="tool-btn" type="button">Color</button>
+      <span class="toolbar-tip">Carga un CSV exportado desde la app Java para actualizar datos. Columnas: Concepto, Valor, Categoria (Troqueles, Medidas, X, Y, Madera, Corte, Hendido, Goma).</span>
+    </section>
+
+    <main class="layout">
+      <section class="panel table-panel">
+        <div class="panel-head">
+          <h2>Troqueles</h2>
+          <span class="panel-sub">Filas con categoria Troqueles</span>
+        </div>
+        <div class="table-wrap">
+          <table class="category-table" aria-label="Tabla Troqueles">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Concepto</th>
+                <th>Valor</th>
+                <th>Categoria</th>
+              </tr>
+            </thead>
+            <tbody id="troquelesBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-head">
+          <h2>Medidas</h2>
+          <span class="panel-sub">Tabla Medidas y subcategorias X e Y</span>
+        </div>
+        <div class="medidas-stack">
+          <div class="subpanel">
+            <h3 class="subpanel-title">Medidas</h3>
+            <div class="table-wrap">
+              <table class="category-table" aria-label="Tabla Medidas">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Concepto</th>
+                    <th>Valor</th>
+                    <th>Categoria</th>
+                  </tr>
+                </thead>
+                <tbody id="medidasBody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="subpanel">
+            <h3 class="subpanel-title">X</h3>
+            <div class="table-wrap">
+              <table class="category-table" aria-label="Tabla X">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Concepto</th>
+                    <th>Valor</th>
+                    <th>Categoria</th>
+                  </tr>
+                </thead>
+                <tbody id="medidasXBody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="subpanel">
+            <h3 class="subpanel-title">Y</h3>
+            <div class="table-wrap">
+              <table class="category-table" aria-label="Tabla Y">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Concepto</th>
+                    <th>Valor</th>
+                    <th>Categoria</th>
+                  </tr>
+                </thead>
+                <tbody id="medidasYBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-head">
+          <h2>Madera</h2>
+          <span class="panel-sub">Filas con categoria Madera</span>
+        </div>
+        <div class="table-wrap">
+          <table class="category-table" aria-label="Tabla Madera">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Concepto</th>
+                <th>Valor</th>
+                <th>Categoria</th>
+              </tr>
+            </thead>
+            <tbody id="maderaBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-head">
+          <h2>Corte</h2>
+          <span class="panel-sub">Filas con categoria Corte</span>
+        </div>
+        <div class="table-wrap">
+          <table class="category-table" aria-label="Tabla Corte">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Concepto</th>
+                <th>Valor</th>
+                <th>Categoria</th>
+              </tr>
+            </thead>
+            <tbody id="corteBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-head">
+          <h2>Hendido</h2>
+          <span class="panel-sub">Filas con categoria Hendido</span>
+        </div>
+        <div class="table-wrap">
+          <table class="category-table" aria-label="Tabla Hendido">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Concepto</th>
+                <th>Valor</th>
+                <th>Categoria</th>
+              </tr>
+            </thead>
+            <tbody id="hendidoBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="panel-head">
+          <h2>Goma</h2>
+          <span class="panel-sub">Filas con categoria Goma</span>
+        </div>
+        <div class="table-wrap">
+          <table class="category-table" aria-label="Tabla Goma">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Concepto</th>
+                <th>Valor</th>
+                <th>Categoria</th>
+              </tr>
+            </thead>
+            <tbody id="gomaBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="app.js?v=3"></script>
+</body>
+</html>

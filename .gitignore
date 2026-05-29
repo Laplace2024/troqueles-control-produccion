@@ -5,6 +5,9 @@ target/
 out/
 build/
 bin/
+dist/
+.tools/
+packaging/jpackage-input/
 *.class
 *.jar
 *.war

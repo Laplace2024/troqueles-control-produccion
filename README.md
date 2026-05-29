@@ -17,6 +17,7 @@ Aplicacion de escritorio en Java/Swing para llevar el control diario de producci
 - [Stack tecnico](#stack-tecnico)
 - [Requisitos](#requisitos)
 - [Como ejecutar](#como-ejecutar)
+- [Instalador nativo (jpackage)](#instalador-nativo-jpackage)
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Tests](#tests)
 - [Datos privados](#datos-privados)
@@ -51,6 +52,12 @@ Aplicacion de escritorio en Java/Swing para llevar el control diario de producci
 - Busqueda libre o por ambito (`Todo`, `Cod. cliente`, `Nombre`, `Madera`).
 - Filtro por filas terminadas / pendientes y combinacion con busqueda.
 - Exportacion a CSV completo o solo filas visibles.
+- Guardado y carga de la hoja activa en PostgreSQL (`Guardar BD` / `Cargar BD`) para trabajo compartido.
+- Sincronizacion automatica con BD cada 45 s: aviso de cambios remotos y recarga opcional.
+- Bloqueo suave de fila mientras un trabajador edita (visible para el resto del equipo).
+- Control de conflicto de guardado en BD por version de hoja (avisa antes de sobrescribir cambios de otro puesto).
+- Registro de guardados en `audit_events` con identificador de trabajador (`usuario@equipo`).
+- Consulta de ranking en BD (`Ranking BD`) para ver quien compro mas y quien compro menos.
 - Reporte HTML autocontenido con cabecera, filtro aplicado y totales.
 - Reporte PDF generado en codigo propio (sin dependencias externas) con cada medida etiquetada (`X = 30`, `Y = 40`).
 - Plantilla de nombre de fichero configurable: `titulo_tipo`, `tipo_titulo`, `titulo_fecha_tipo`, `fecha_titulo_tipo`.
@@ -76,7 +83,7 @@ Aplicacion de escritorio en Java/Swing para llevar el control diario de producci
 | Build           | Maven 3.9+                                  |
 | Tests           | JUnit Jupiter 5.10                          |
 | HTTP local      | `com.sun.net.httpserver` (JDK)              |
-| Persistencia    | CSV plano + `Preferences` para ajustes      |
+| Persistencia    | CSV plano + `Preferences` + base PostgreSQL (fase LAN) |
 | PDF             | Generador propio, sin librerias de terceros |
 
 ## Requisitos
@@ -112,9 +119,73 @@ mvn clean package
 .\compilar-y-ejecutar.ps1
 ```
 
+### Servidor LAN (misma WiFi)
+
+Este modo arranca un proceso servidor para que varios puestos del taller se conecten a la misma base PostgreSQL central.
+
+```powershell
+.\scripts\lan-server.ps1
+```
+
+Opciones:
+
+```powershell
+.\scripts\lan-server.ps1 -Host 0.0.0.0 -Port 9010
+```
+
+Comprobacion desde otro equipo de la red:
+
+```text
+http://IP_DEL_SERVIDOR:9010/health
+```
+
+Sincronizacion automatica en clientes Swing:
+
+- Al abrir la app se activa polling cada 45 s contra la hoja actual.
+- Si la version remota es mas nueva, aparece el aviso **Hay cambios en BD, ¿recargar?**
+- Mientras editas una celda, se reserva la fila en BD durante 90 s (bloqueo suave visible para otros puestos).
+- Puedes desactivar la sync desde **Archivo > Sincronizacion automatica BD** o forzar comprobacion con **Comprobar BD ahora**.
+
+Configuracion de PostgreSQL:
+
+- Copia `docs/db.properties.example` como `%USERPROFILE%\.troqueles\db.properties` en el equipo servidor.
+- O usa variables de entorno `TROQUELES_DB_HOST`, `TROQUELES_DB_PORT`, `TROQUELES_DB_NAME`, `TROQUELES_DB_USER`, `TROQUELES_DB_PASS`, `TROQUELES_DB_SSL`.
+
 ### Con el lanzador `.bat`
 
 Doble click sobre `Troqueles.bat` desde la carpeta del proyecto una vez compilado.
+
+## Instalador nativo (jpackage)
+
+Requisitos adicionales:
+
+- `jpackage` incluido en el JDK 21 instalado.
+- Para generar `.exe` o `.msi` en Windows: WiX Toolset 3.x con `candle.exe` y `light.exe` en `PATH`.
+- Sin WiX, el script genera una carpeta portable (`app-image`) lista para copiar o comprimir.
+
+Generar el instalador desde la raiz del repositorio (recomendado si no tienes Maven en PATH):
+
+```powershell
+.\scripts\crear-instalador.ps1
+```
+
+Alternativa directa (requiere Maven y JDK 21+ para `--app-content`):
+
+```powershell
+.\scripts\jpackage.ps1
+```
+
+Opciones utiles:
+
+```powershell
+.\scripts\jpackage.ps1 -PackageType app-image
+.\scripts\jpackage.ps1 -PackageType exe
+.\scripts\jpackage.ps1 -SkipTests
+```
+
+El resultado se escribe en `dist/`. El empaquetado incluye la carpeta `dashboard/` junto a la aplicacion para que el servidor web local funcione tras la instalacion.
+
+Icono opcional: coloca `docs/icon.ico` antes de empaquetar para aplicarlo al lanzador.
 
 ## Estructura del proyecto
 
@@ -137,17 +208,18 @@ troqueles-control-produccion/
 │   └── test/java/com/trabajo/troqueles/   # Suite JUnit 5
 ├── dashboard/                       # Front estatico del dashboard
 ├── docs/                            # Documentacion adicional
+├── scripts/                         # Empaquetado con jpackage
 ├── pom.xml
 └── README.md
 ```
 
 ## Tests
 
-La suite cubre normalizacion de clientes, snapshots de historial, generacion de reporte HTML y la guarda contra recursion en operaciones de historial.
+La suite cubre normalizacion de clientes, snapshots de historial, generacion de reportes, parser de formulas, atajos y base tecnica de configuracion para BD.
 
 ```
 $ mvn test
-[INFO] Tests run: 10, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 22, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
@@ -169,8 +241,7 @@ Sin esos ficheros la app sigue funcionando, simplemente sin autocompletado. Los 
 
 - Columna de fecha automatica con filtro por rango.
 - Estados intermedios (`Pendiente / En curso / Terminado`) en lugar del booleano `Hecho`.
-- Empaquetado como instalador nativo con `jpackage`.
-- Persistencia opcional en SQLite.
+- Modo multiusuario LAN por fases (cliente-servidor + PostgreSQL central).
 - CI con GitHub Actions y badge dinamico de build.
 
 ## Licencia

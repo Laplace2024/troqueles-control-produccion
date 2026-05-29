@@ -1,0 +1,10 @@
+# Configuracion de base de datos para fases multiusuario.
+# Copiar como: %USERPROFILE%\.troqueles\db.properties
+
+db.host=127.0.0.1
+db.port=5432
+db.name=troqueles
+db.user=troqueles_app
+db.pass=cambiar_este_password
+db.ssl=false
+

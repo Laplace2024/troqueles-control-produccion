@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.net.URI;
+import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -43,6 +44,7 @@ import javax.swing.DefaultCellEditor;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
+import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JColorChooser;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
@@ -96,7 +98,10 @@ public class SpreadsheetFrame extends JFrame {
     private static final String COL_GTAM = "G.tamaño";
     private static final String COL_HECHO = "Hecho";
 
-    private static final String[] GOMA_OPCIONES = { "Amarillo", "Negro", "Blanco", "Rosa" };
+    private static final String[] GOMA_OPCIONES = {
+        "Amarillo", "Negro", "Blanco", "Rosa",
+        "Blanco + Negro", "Roja", "Roja + Negro", "Roja + Amarillo", "Plancha negra"
+    };
     private static final String[] GTAM_OPCIONES = { "7", "10" };
     private static final String[] MADERA_OPCIONES = { "18", "15", "12", "10" };
     /** Opciones del desplegable unico de tamaño (corte y hendido). */
@@ -143,6 +148,7 @@ public class SpreadsheetFrame extends JFrame {
     private final transient ChangeLog changeLog = new ChangeLog(resolveChangeLogFile(), 1000);
     private final transient SearchAndFilter searchAndFilter;
     private final transient ToolbarActionRegistry toolbarActions;
+    private final transient DbWorkbookRepository dbWorkbookRepository;
     private transient DashboardServer dashboardServer;
 
     private JComboBox<String> searchScopeCombo;
@@ -161,12 +167,19 @@ public class SpreadsheetFrame extends JFrame {
     private JPanel bottomPanel;
 
     private boolean historyOperationInProgress;
+    /** Detalle del proximo DELETE (p. ej. Nº troquel) capturado antes de removeRow. */
+    private String pendingRowDeleteLogDetail;
     private int extraColumnCounter = 1;
     private int pendingSuggestionModelRow = -1;
     private int pendingSuggestionModelCol = -1;
     private String pendingSuggestionCode;
     private String pendingSuggestionName;
     private final transient Map<String, Integer> columnIndexCache = new HashMap<String, Integer>();
+    private final transient Map<String, Long> dbSheetVersionByName = new HashMap<String, Long>();
+    private final transient DbAutoSyncService dbAutoSync;
+    private transient Map<Integer, String> remoteRowLocksByModelRow = new HashMap<Integer, String>();
+    private transient JLabel dbSyncStatusLabel;
+    private transient JCheckBoxMenuItem autoSyncMenuItem;
 
     private Color colorEvenRow = Color.WHITE;
     private Color colorOddRow = new Color(245, 247, 250);
@@ -186,6 +199,7 @@ public class SpreadsheetFrame extends JFrame {
     private static final Color BUTTON_TEXT = new Color(28, 41, 66);
     private static final DateTimeFormatter TITLE_DATETIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final DateTimeFormatter FILE_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmm");
+    private static final String WORKER_NAME = resolveWorkerName();
 
     private String exportNameTemplate = "titulo_tipo";
 
@@ -268,6 +282,8 @@ public class SpreadsheetFrame extends JFrame {
             dataTables,
             this::getColumnIndexByName
         );
+        dbWorkbookRepository = new DbWorkbookRepository(DbSettings.loadDefault());
+        dbAutoSync = new DbAutoSyncService(dbWorkbookRepository, WORKER_NAME);
 
         history = new SpreadsheetHistory(50);
 
@@ -295,6 +311,7 @@ public class SpreadsheetFrame extends JFrame {
         applyTheme();
         updateValidationSummaryLabel();
         applySheetTitle(loadSavedSheetTitle());
+        startDbAutoSync();
         changeLog.record("Aplicacion abierta", "Filas iniciales: " + tableModel.getRowCount());
     }
 
@@ -512,7 +529,18 @@ public class SpreadsheetFrame extends JFrame {
     }
 
     private JComponent buildDashboardTablesPanel() {
-        JTable jt = new JTable(tableModel);
+        JTable jt = new JTable(tableModel) {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                if (!super.isCellEditable(row, column)) {
+                    return false;
+                }
+                int modelRow = convertRowIndexToModel(row);
+                return !isRowLockedByOtherWorker(modelRow);
+            }
+        };
         jt.setRowHeight(28);
         jt.setFont(new Font("Segoe UI", Font.PLAIN, 13));
         jt.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
@@ -533,6 +561,7 @@ public class SpreadsheetFrame extends JFrame {
         dataTables.add(jt);
         dataSorters.add(sorter);
         activeDataTable = jt;
+        installDbSyncCellEditorListener(jt);
 
         jt.addFocusListener(new FocusAdapter() {
             @Override
@@ -587,6 +616,9 @@ public class SpreadsheetFrame extends JFrame {
         return container;
     }
 
+    /** Fondo suave para filas bloqueadas por otro trabajador en BD. */
+    private static final Color ROW_LOCKED_BG = new Color(225, 236, 252);
+    private static final Color ROW_LOCKED_BG_ALT = new Color(210, 226, 246);
     /** Color de confirmacion aplicado a toda la fila cuando la columna `Hecho` esta marcada. */
     private static final Color ROW_DONE_BG = new Color(255, 205, 205);
     /** Variante mas oscura para filas alternas, manteniendo el aviso visible. */
@@ -690,6 +722,7 @@ public class SpreadsheetFrame extends JFrame {
                     setFont(new Font("Segoe UI", Font.ITALIC, 11));
                 }
                 applyRowBackground(this, table, row, column, isSelected, done);
+                applyRowLockTooltip(this, table, row);
                 if (isSelected) {
                     setForeground(Color.WHITE);
                 } else {
@@ -733,12 +766,19 @@ public class SpreadsheetFrame extends JFrame {
             }
 
             applyRowBackground(this, table, row, column, isSelected, done);
+            applyRowLockTooltip(this, table, row);
             return component;
         }
     }
 
     private void applyRowBackground(JLabel target, JTable table, int row, int column, boolean isSelected, boolean done) {
         if (isSelected) {
+            return;
+        }
+        int modelRow = table.convertRowIndexToModel(row);
+        String lockHolder = remoteRowLocksByModelRow.get(Integer.valueOf(modelRow));
+        if (lockHolder != null && !lockHolder.trim().isEmpty()) {
+            target.setBackground(row % 2 == 0 ? ROW_LOCKED_BG : ROW_LOCKED_BG_ALT);
             return;
         }
         if (done) {
@@ -778,9 +818,14 @@ public class SpreadsheetFrame extends JFrame {
                                                        boolean hasFocus, int row, int column) {
             setSelected(Boolean.TRUE.equals(value));
             boolean done = isRowDone(table, row);
+            int modelRow = table.convertRowIndexToModel(row);
+            String lockHolder = remoteRowLocksByModelRow.get(Integer.valueOf(modelRow));
             if (isSelected) {
                 setBackground(table.getSelectionBackground());
                 setForeground(table.getSelectionForeground());
+            } else if (lockHolder != null && !lockHolder.trim().isEmpty()) {
+                setBackground(row % 2 == 0 ? ROW_LOCKED_BG : ROW_LOCKED_BG_ALT);
+                setForeground(new Color(35, 45, 65));
             } else if (done) {
                 setBackground(row % 2 == 0 ? ROW_DONE_BG : ROW_DONE_BG_ALT);
                 setForeground(ROW_DONE_FG);
@@ -823,6 +868,10 @@ public class SpreadsheetFrame extends JFrame {
         guardar.addActionListener(event -> saveAllRowsToCsv());
         JMenuItem cargar = new JMenuItem("Cargar tabla CSV");
         cargar.addActionListener(event -> loadRowsFromCsv());
+        JMenuItem guardarBd = new JMenuItem("Guardar tabla BD");
+        guardarBd.addActionListener(event -> saveAllRowsToDatabase());
+        JMenuItem cargarBd = new JMenuItem("Cargar tabla BD");
+        cargarBd.addActionListener(event -> loadRowsFromDatabase());
         JMenuItem exportarHtml = new JMenuItem("Exportar reporte HTML");
         exportarHtml.addActionListener(event -> exportHtmlReport());
         JMenuItem exportarPdf = new JMenuItem("Exportar reporte PDF");
@@ -837,6 +886,21 @@ public class SpreadsheetFrame extends JFrame {
         plantillaExport.addActionListener(event -> configureExportNameTemplate());
         archivoMenu.add(guardar);
         archivoMenu.add(cargar);
+        archivoMenu.add(guardarBd);
+        archivoMenu.add(cargarBd);
+        autoSyncMenuItem = new JCheckBoxMenuItem("Sincronizacion automatica BD", true);
+        autoSyncMenuItem.addActionListener(event -> {
+            dbAutoSync.setEnabled(autoSyncMenuItem.isSelected());
+            updateDbSyncStatusLabel(autoSyncMenuItem.isSelected()
+                ? "Sync BD activado"
+                : "Sync BD desactivado");
+        });
+        JMenuItem comprobarBdAhora = new JMenuItem("Comprobar BD ahora");
+        comprobarBdAhora.addActionListener(event -> dbAutoSync.pollNow());
+        archivoMenu.addSeparator();
+        archivoMenu.add(autoSyncMenuItem);
+        archivoMenu.add(comprobarBdAhora);
+        archivoMenu.addSeparator();
         archivoMenu.add(exportarHtml);
         archivoMenu.add(exportarPdf);
         archivoMenu.addSeparator();
@@ -905,6 +969,8 @@ public class SpreadsheetFrame extends JFrame {
         exportarDesplegables.addActionListener(event -> exportDropdownsSummaryToCsv());
         JMenuItem estadisticasClientes = new JMenuItem("Estadisticas por cliente (visible)");
         estadisticasClientes.addActionListener(event -> showClientDistributionStats());
+        JMenuItem rankingBd = new JMenuItem("Ranking clientes BD");
+        rankingBd.addActionListener(event -> showClientRankingFromDatabase());
         datosMenu.add(exportarVisible);
         datosMenu.add(abrirDashboard);
         datosMenu.add(imagenFila);
@@ -913,6 +979,7 @@ public class SpreadsheetFrame extends JFrame {
         datosMenu.add(exportarDesplegables);
         datosMenu.addSeparator();
         datosMenu.add(estadisticasClientes);
+        datosMenu.add(rankingBd);
 
         menuBar.add(archivoMenu);
         menuBar.add(insertarMenu);
@@ -1003,12 +1070,18 @@ public class SpreadsheetFrame extends JFrame {
         JButton saveAllButton = toolbarActions.newButton("save-all", "Guardar tabla", this::saveAllRowsToCsv);
 
         JButton loadButton = toolbarActions.newButton("load-csv", "Cargar tabla", this::loadRowsFromCsv);
+        JButton saveDbButton = new JButton("Guardar BD");
+        saveDbButton.addActionListener(event -> saveAllRowsToDatabase());
+        JButton loadDbButton = new JButton("Cargar BD");
+        loadDbButton.addActionListener(event -> loadRowsFromDatabase());
 
         JButton htmlReportButton = toolbarActions.newButton("export-html", "Exportar reporte HTML", this::exportHtmlReport);
         JButton pdfReportButton = new JButton("Exportar reporte PDF");
         pdfReportButton.addActionListener(event -> exportPdfReport());
         JButton clientStatsButton = new JButton("Stats clientes");
         clientStatsButton.addActionListener(event -> showClientDistributionStats());
+        JButton dbRankingButton = new JButton("Ranking BD");
+        dbRankingButton.addActionListener(event -> showClientRankingFromDatabase());
 
         JComboBox<String> quickInsertMenu = new JComboBox<String>(new String[]{
             "Insertar rapido...",
@@ -1022,8 +1095,11 @@ public class SpreadsheetFrame extends JFrame {
         JComboBox<String> quickDataMenu = new JComboBox<String>(new String[]{
             "Datos rapido...",
             "Exportar CSV visible",
+            "Guardar tabla BD",
+            "Cargar tabla BD",
             "Exportar reporte PDF",
             "Estadisticas por cliente (visible)",
+            "Ranking clientes BD",
             "Abrir dashboard web",
             "Añadir imagen a fila",
             "Configurar desplegable",
@@ -1078,9 +1154,12 @@ public class SpreadsheetFrame extends JFrame {
         panel.add(openDashboardButton);
         panel.add(saveAllButton);
         panel.add(loadButton);
+        panel.add(saveDbButton);
+        panel.add(loadDbButton);
         panel.add(htmlReportButton);
         panel.add(pdfReportButton);
         panel.add(clientStatsButton);
+        panel.add(dbRankingButton);
         addToolbarSeparator(panel);
         panel.add(quickInsertMenu);
         panel.add(quickDataMenu);
@@ -1183,10 +1262,16 @@ public class SpreadsheetFrame extends JFrame {
         }
         if ("Exportar CSV visible".equals(action)) {
             exportVisibleRowsToCsv();
+        } else if ("Guardar tabla BD".equals(action)) {
+            saveAllRowsToDatabase();
+        } else if ("Cargar tabla BD".equals(action)) {
+            loadRowsFromDatabase();
         } else if ("Exportar reporte PDF".equals(action)) {
             exportPdfReport();
         } else if ("Estadisticas por cliente (visible)".equals(action)) {
             showClientDistributionStats();
+        } else if ("Ranking clientes BD".equals(action)) {
+            showClientRankingFromDatabase();
         } else if ("Abrir dashboard web".equals(action)) {
             openDashboardWithCurrentData();
         } else if ("Añadir imagen a fila".equals(action)) {
@@ -1343,6 +1428,10 @@ public class SpreadsheetFrame extends JFrame {
         panel.add(kpiRowsLabel);
         panel.add(kpiSumLabel);
         panel.add(kpiAvgLabel);
+        addToolbarSeparator(panel);
+        dbSyncStatusLabel = new JLabel("Sync BD: iniciando...");
+        dbSyncStatusLabel.setHorizontalAlignment(SwingConstants.LEFT);
+        panel.add(dbSyncStatusLabel);
 
         return panel;
     }
@@ -1431,6 +1520,25 @@ public class SpreadsheetFrame extends JFrame {
         };
     }
 
+    private String buildRowDeleteLogDetail(int modelRow) {
+        if (modelRow < 0 || modelRow >= tableModel.getRowCount()) {
+            return "fila desconocida";
+        }
+        String troquel = "";
+        int colNum = columnIndexOf(COL_NUM);
+        if (colNum >= 0) {
+            Object value = tableModel.getValueAt(modelRow, colNum);
+            if (value != null) {
+                troquel = value.toString().trim();
+            }
+        }
+        String detalle = "fila " + (modelRow + 1);
+        if (!troquel.isEmpty()) {
+            detalle += ", Nº troquel " + troquel;
+        }
+        return detalle;
+    }
+
     private void deleteSelectedRow() {
         stopEditingBeforeTableMutation();
         int selectedViewRow = getDataTable().getSelectedRow();
@@ -1439,6 +1547,7 @@ public class SpreadsheetFrame extends JFrame {
             return;
         }
         int modelRow = getDataTable().convertRowIndexToModel(selectedViewRow);
+        pendingRowDeleteLogDetail = buildRowDeleteLogDetail(modelRow);
         tableModel.removeRow(modelRow);
     }
 
@@ -2020,6 +2129,104 @@ public class SpreadsheetFrame extends JFrame {
         }
     }
 
+    private void saveAllRowsToDatabase() {
+        String sheetName = extractSheetTitle(getTitle());
+        try {
+            long expectedVersion = expectedDbVersion(sheetName);
+            DbWorkbookRepository.SaveResult result = dbWorkbookRepository.saveSheetOptimistic(
+                sheetName,
+                tableModel,
+                expectedVersion,
+                WORKER_NAME
+            );
+            if (result.isConflict()) {
+                int choice = JOptionPane.showOptionDialog(
+                    this,
+                    "Otro trabajador guardo esta hoja antes que tu.\n"
+                        + "Version local esperada: " + expectedVersion + "\n"
+                        + "Version actual en BD: " + result.version() + "\n\n"
+                        + "¿Que quieres hacer?",
+                    "Conflicto de guardado",
+                    JOptionPane.DEFAULT_OPTION,
+                    JOptionPane.WARNING_MESSAGE,
+                    null,
+                    new Object[]{"Recargar BD", "Sobrescribir", "Cancelar"},
+                    "Recargar BD"
+                );
+                if (choice == 0) {
+                    loadRowsFromDatabase();
+                } else if (choice == 1) {
+                    long forcedVersion = dbWorkbookRepository.saveSheetForce(sheetName, tableModel, WORKER_NAME);
+                    dbSheetVersionByName.put(sheetName, forcedVersion);
+                    dbAutoSync.updateLocalVersion(forcedVersion);
+                    changeLog.record(
+                        "Guardar BD forzado",
+                        sheetName + " v" + forcedVersion + " (" + tableModel.getRowCount() + " filas)"
+                    );
+                    JOptionPane.showMessageDialog(this, "Sobrescritura completada en BD (v" + forcedVersion + ").");
+                }
+                return;
+            }
+            dbSheetVersionByName.put(sheetName, result.version());
+            dbAutoSync.updateLocalVersion(result.version());
+            changeLog.record(
+                "Guardar BD",
+                sheetName + " v" + result.version() + " (" + tableModel.getRowCount() + " filas)"
+            );
+            JOptionPane.showMessageDialog(this, "Tabla guardada en BD para hoja: " + sheetName + " (v" + result.version() + ")");
+        } catch (SQLException ex) {
+            JOptionPane.showMessageDialog(this, "Error al guardar en BD: " + ex.getMessage());
+        }
+    }
+
+    private void showClientRankingFromDatabase() {
+        String sheetName = extractSheetTitle(getTitle());
+        try {
+            List<DbWorkbookRepository.ClientRankingEntry> ranking = dbWorkbookRepository.loadClientRanking(sheetName);
+            if (ranking.isEmpty()) {
+                JOptionPane.showMessageDialog(
+                    this,
+                    "No hay ranking en BD para la hoja actual.\nGuarda primero con 'Guardar BD'.",
+                    "Ranking clientes BD",
+                    JOptionPane.INFORMATION_MESSAGE
+                );
+                return;
+            }
+            StringBuilder sb = new StringBuilder();
+            DbWorkbookRepository.ClientRankingEntry top = ranking.get(0);
+            DbWorkbookRepository.ClientRankingEntry bottom = ranking.get(ranking.size() - 1);
+            sb.append("Hoja: ").append(sheetName).append('\n');
+            sb.append("Trabajador: ").append(WORKER_NAME).append('\n');
+            sb.append("Clientes en ranking: ").append(ranking.size()).append("\n\n");
+            sb.append("Mayor compra: ")
+                .append(top.clientLabel())
+                .append(" (filas=").append(top.rowCount())
+                .append(", pedidos=").append(top.pedidosCount())
+                .append(")\n");
+            sb.append("Menor compra: ")
+                .append(bottom.clientLabel())
+                .append(" (filas=").append(bottom.rowCount())
+                .append(", pedidos=").append(bottom.pedidosCount())
+                .append(")\n\n");
+            sb.append("Top 10:\n");
+            int topLimit = Math.min(10, ranking.size());
+            for (int i = 0; i < topLimit; i++) {
+                DbWorkbookRepository.ClientRankingEntry entry = ranking.get(i);
+                sb.append(i + 1)
+                    .append(". ")
+                    .append(entry.clientLabel())
+                    .append(" -> filas=")
+                    .append(entry.rowCount())
+                    .append(", pedidos=")
+                    .append(entry.pedidosCount())
+                    .append('\n');
+            }
+            JOptionPane.showMessageDialog(this, sb.toString(), "Ranking clientes BD", JOptionPane.INFORMATION_MESSAGE);
+        } catch (SQLException ex) {
+            JOptionPane.showMessageDialog(this, "Error consultando ranking en BD: " + ex.getMessage());
+        }
+    }
+
     private void exportVisibleRowsToCsv() {
         JFileChooser chooser = buildCsvChooser(
             "Guardar CSV visible",
@@ -2111,10 +2318,131 @@ public class SpreadsheetFrame extends JFrame {
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent event) {
+                stopDbAutoSyncQuietly();
                 stopDashboardServerQuietly();
             }
         });
-        Runtime.getRuntime().addShutdownHook(new Thread(this::stopDashboardServerQuietly, "troqueles-dashboard-stop"));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            stopDbAutoSyncQuietly();
+            stopDashboardServerQuietly();
+        }, "troqueles-shutdown"));
+    }
+
+    private void startDbAutoSync() {
+        dbAutoSync.setCallbacks(new DbAutoSyncService.Callbacks() {
+            @Override
+            public void onRemoteVersionNewer(long remoteVersion, long localVersion) {
+                SwingUtilities.invokeLater(() -> handleRemoteVersionNewer(remoteVersion, localVersion));
+            }
+
+            @Override
+            public void onStatusUpdate(String status) {
+                SwingUtilities.invokeLater(() -> updateDbSyncStatusLabel(status));
+            }
+
+            @Override
+            public void onForeignRowLocksChanged(Map<Integer, String> locksByOtherWorkers) {
+                SwingUtilities.invokeLater(() -> applyForeignRowLocks(locksByOtherWorkers));
+            }
+
+            @Override
+            public void onSyncError(String message) {
+                SwingUtilities.invokeLater(() -> updateDbSyncStatusLabel(message));
+            }
+        });
+        String sheetName = extractSheetTitle(getTitle());
+        dbAutoSync.start(sheetName, expectedDbVersion(sheetName));
+    }
+
+    private void stopDbAutoSyncQuietly() {
+        if (dbAutoSync != null) {
+            dbAutoSync.stop();
+        }
+    }
+
+    private void installDbSyncCellEditorListener(JTable table) {
+        table.addPropertyChangeListener("tableCellEditor", event -> {
+            Object newEditor = event.getNewValue();
+            if (newEditor != null) {
+                int viewRow = table.getEditingRow();
+                if (viewRow >= 0) {
+                    int modelRow = table.convertRowIndexToModel(viewRow);
+                    if (!dbAutoSync.beginLocalRowEdit(modelRow)) {
+                        SwingUtilities.invokeLater(() -> {
+                            CellEditor editor = table.getCellEditor();
+                            if (editor != null) {
+                                editor.cancelCellEditing();
+                            }
+                        });
+                    }
+                }
+            } else {
+                dbAutoSync.endLocalRowEdit();
+            }
+        });
+    }
+
+    private void handleRemoteVersionNewer(long remoteVersion, long localVersion) {
+        dbAutoSync.acknowledgeRemoteVersion(remoteVersion);
+        int choice = JOptionPane.showOptionDialog(
+            this,
+            "Hay cambios en BD para esta hoja.\n"
+                + "Version local: " + localVersion + "\n"
+                + "Version remota: " + remoteVersion + "\n\n"
+                + "¿Quieres recargar los datos?",
+            "Cambios remotos detectados",
+            JOptionPane.DEFAULT_OPTION,
+            JOptionPane.INFORMATION_MESSAGE,
+            null,
+            new Object[]{"Recargar BD", "Ignorar", "Desactivar sync"},
+            "Recargar BD"
+        );
+        if (choice == 0) {
+            loadRowsFromDatabase(true);
+            updateDbSyncStatusLabel("Sync BD: recargado v" + remoteVersion);
+            changeLog.record("Recarga auto BD", extractSheetTitle(getTitle()) + " v" + remoteVersion);
+        } else if (choice == 2 && autoSyncMenuItem != null) {
+            autoSyncMenuItem.setSelected(false);
+            dbAutoSync.setEnabled(false);
+            updateDbSyncStatusLabel("Sync BD desactivado");
+        }
+    }
+
+    private void applyForeignRowLocks(Map<Integer, String> locksByOtherWorkers) {
+        remoteRowLocksByModelRow = locksByOtherWorkers == null
+            ? new HashMap<Integer, String>()
+            : new HashMap<Integer, String>(locksByOtherWorkers);
+        repaintAllDataTables();
+        if (dbSyncStatusLabel != null) {
+            int lockCount = remoteRowLocksByModelRow.size();
+            dbSyncStatusLabel.setToolTipText(
+                lockCount > 0 ? lockCount + " fila(s) bloqueada(s) por otros trabajadores" : null
+            );
+        }
+    }
+
+    private boolean isRowLockedByOtherWorker(int modelRow) {
+        if (modelRow < 0) {
+            return false;
+        }
+        String holder = remoteRowLocksByModelRow.get(Integer.valueOf(modelRow));
+        return holder != null && !holder.trim().isEmpty();
+    }
+
+    private void applyRowLockTooltip(JLabel target, JTable table, int viewRow) {
+        int modelRow = table.convertRowIndexToModel(viewRow);
+        String holder = remoteRowLocksByModelRow.get(Integer.valueOf(modelRow));
+        if (holder != null && !holder.trim().isEmpty()) {
+            target.setToolTipText("Fila bloqueada por " + holder.trim());
+        } else {
+            target.setToolTipText(null);
+        }
+    }
+
+    private void updateDbSyncStatusLabel(String status) {
+        if (dbSyncStatusLabel != null) {
+            dbSyncStatusLabel.setText("Sync BD: " + status);
+        }
     }
 
     private void loadRowsFromCsv() {
@@ -2130,23 +2458,7 @@ public class SpreadsheetFrame extends JFrame {
                 return;
             }
             List<String> headers = data.getHeaders();
-            executeHistoryOperation(() -> {
-                tableModel.setColumnCount(0);
-                for (String header : headers) {
-                    tableModel.addColumn(header);
-                }
-                tableModel.setRowCount(0);
-                for (Object[] row : rows) {
-                    tableModel.addRow(row);
-                }
-            });
-            invalidateColumnIndexCache();
-            dropdownOptionsByColumnIndex.clear();
-            history.push(tableModel);
-            configureTableColumns();
-            applyCombinedFilter();
-            applyImageColumnSizing();
-            adjustRowHeightsForExistingImages();
+            applyLoadedRows(headers, rows);
             changeLog.record(
                 "Cargar CSV",
                 chooser.getSelectedFile().getName() + " (" + rows.size() + " filas)"
@@ -2155,6 +2467,73 @@ public class SpreadsheetFrame extends JFrame {
         } catch (IOException ex) {
             JOptionPane.showMessageDialog(this, "Error al cargar CSV: " + ex.getMessage());
         }
+    }
+
+    private void loadRowsFromDatabase() {
+        loadRowsFromDatabase(false);
+    }
+
+    private void loadRowsFromDatabase(boolean silent) {
+        String sheetName = extractSheetTitle(getTitle());
+        try {
+            DbWorkbookRepository.WorkbookData data = dbWorkbookRepository.loadSheet(sheetName);
+            if (data == null) {
+                if (!silent) {
+                    JOptionPane.showMessageDialog(this, "No hay datos guardados en BD para la hoja: " + sheetName);
+                }
+                return;
+            }
+            applyLoadedRows(data.headers(), data.rows());
+            dbSheetVersionByName.put(sheetName, data.version());
+            dbAutoSync.updateLocalVersion(data.version());
+            dbAutoSync.acknowledgeRemoteVersion(data.version());
+            changeLog.record("Cargar BD", sheetName + " v" + data.version() + " (" + data.rows().size() + " filas)");
+            if (!silent) {
+                JOptionPane.showMessageDialog(
+                    this,
+                    "Carga desde BD completada. Filas importadas: " + data.rows().size() + " (v" + data.version() + ")"
+                );
+            }
+        } catch (SQLException ex) {
+            if (!silent) {
+                JOptionPane.showMessageDialog(this, "Error al cargar desde BD: " + ex.getMessage());
+            } else {
+                updateDbSyncStatusLabel("Sync BD: error al recargar");
+            }
+        }
+    }
+
+    private long expectedDbVersion(String sheetName) {
+        Long current = dbSheetVersionByName.get(sheetName);
+        return current == null ? 0L : current.longValue();
+    }
+
+    private static String resolveWorkerName() {
+        String user = System.getProperty("user.name");
+        String host = System.getenv("COMPUTERNAME");
+        String normalizedUser = (user == null || user.trim().isEmpty()) ? "desconocido" : user.trim();
+        String normalizedHost = (host == null || host.trim().isEmpty()) ? "equipo" : host.trim();
+        return normalizedUser + "@" + normalizedHost;
+    }
+
+    private void applyLoadedRows(List<String> headers, List<Object[]> rows) {
+        executeHistoryOperation(() -> {
+            tableModel.setColumnCount(0);
+            for (String header : headers) {
+                tableModel.addColumn(header);
+            }
+            tableModel.setRowCount(0);
+            for (Object[] row : rows) {
+                tableModel.addRow(row);
+            }
+        });
+        invalidateColumnIndexCache();
+        dropdownOptionsByColumnIndex.clear();
+        history.push(tableModel);
+        configureTableColumns();
+        applyCombinedFilter();
+        applyImageColumnSizing();
+        adjustRowHeightsForExistingImages();
     }
 
     private void exportHtmlReport() {
@@ -2577,12 +2956,18 @@ public class SpreadsheetFrame extends JFrame {
                 : count + " filas (" + (from + 1) + ".." + (to + 1) + ")";
             changeLog.record("Fila(s) anadida(s)", detalle);
         } else if (event.getType() == TableModelEvent.DELETE) {
-            int from = event.getFirstRow();
-            int to = event.getLastRow();
-            int count = Math.max(1, to - from + 1);
-            String detalle = count == 1
-                ? "fila " + (from + 1)
-                : count + " filas (" + (from + 1) + ".." + (to + 1) + ")";
+            String detalle;
+            if (pendingRowDeleteLogDetail != null) {
+                detalle = pendingRowDeleteLogDetail;
+                pendingRowDeleteLogDetail = null;
+            } else {
+                int from = event.getFirstRow();
+                int to = event.getLastRow();
+                int count = Math.max(1, to - from + 1);
+                detalle = count == 1
+                    ? "fila " + (from + 1)
+                    : count + " filas (" + (from + 1) + ".." + (to + 1) + ")";
+            }
             changeLog.record("Fila(s) eliminada(s)", detalle);
         }
     }
@@ -3271,6 +3656,9 @@ public class SpreadsheetFrame extends JFrame {
         saveSheetTitle(normalized);
         if (changeLog != null && !normalized.equals(previous)) {
             changeLog.record("Renombrar hoja", "'" + previous + "' -> '" + normalized + "'");
+        }
+        if (dbAutoSync != null) {
+            dbAutoSync.updateSheetName(normalized);
         }
     }
 
