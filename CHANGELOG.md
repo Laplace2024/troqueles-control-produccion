@@ -1,20 +1,21 @@
 # Changelog - Trabajo Troqueles
 
-## 2026-05-29 - Historial: Nº troquel al eliminar fila (Nivel 1)
+## 2026-05-29 - Historial: Nº troquel al eliminar fila (fix registro directo)
 
 ### Objetivo
-Que al borrar una fila el historial de cambios guarde el numero de troquel de esa fila, no solo el indice de fila.
+Corregir que el historial no mostraba el Nº de troquel al borrar fila (el registro dependia solo del listener del modelo).
 
 ### Cambios
-- `SpreadsheetFrame.deleteSelectedRow`: captura el valor de la columna `Nº` antes de `removeRow`.
-- `SpreadsheetFrame.logTableModelEvent`: en DELETE usa el detalle pendiente (p. ej. `fila 3, Nº troquel 48076`).
+- `deleteSelectedRow`: lee el Nº antes de borrar y llama a `changeLog.record` directamente.
+- `readTroquelNumberForModelRow`: lectura desde modelo y tabla visible (fallback de columna `Nº`).
+- `suppressNextDeleteChangeLog`: evita entrada duplicada en el listener DELETE.
 
 ### Archivos tocados
 - `src/main/java/com/trabajo/troqueles/SpreadsheetFrame.java`
 - `CHANGELOG.md`
 
 ### Verificacion
-- Revision manual: eliminar una fila con Nº relleno y comprobar entrada en Historial / `cambios.log`.
+- Recompilar y ejecutar; borrar fila con Nº relleno; comprobar en Historial: `fila X, Nº troquel YYYY`.
 
 ## 2026-05-29 - Columna Goma: nuevas opciones en el desplegable (Nivel 1)
 

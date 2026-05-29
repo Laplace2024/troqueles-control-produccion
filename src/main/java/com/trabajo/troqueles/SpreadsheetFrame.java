@@ -167,8 +167,8 @@ public class SpreadsheetFrame extends JFrame {
     private JPanel bottomPanel;
 
     private boolean historyOperationInProgress;
-    /** Detalle del proximo DELETE (p. ej. Nº troquel) capturado antes de removeRow. */
-    private String pendingRowDeleteLogDetail;
+    /** Evita duplicar entrada en ChangeLog cuando deleteSelectedRow ya registro el borrado. */
+    private boolean suppressNextDeleteChangeLog;
     private int extraColumnCounter = 1;
     private int pendingSuggestionModelRow = -1;
     private int pendingSuggestionModelCol = -1;
@@ -1520,18 +1520,49 @@ public class SpreadsheetFrame extends JFrame {
         };
     }
 
-    private String buildRowDeleteLogDetail(int modelRow) {
-        if (modelRow < 0 || modelRow >= tableModel.getRowCount()) {
-            return "fila desconocida";
+    private String readTroquelNumberForModelRow(int modelRow) {
+        if (modelRow < 0) {
+            return "";
         }
-        String troquel = "";
         int colNum = columnIndexOf(COL_NUM);
-        if (colNum >= 0) {
-            Object value = tableModel.getValueAt(modelRow, colNum);
-            if (value != null) {
-                troquel = value.toString().trim();
+        if (colNum < 0) {
+            for (int c = 0; c < tableModel.getColumnCount(); c++) {
+                String name = tableModel.getColumnName(c);
+                if (name != null && (COL_NUM.equals(name) || name.equalsIgnoreCase("Nº")
+                    || name.equalsIgnoreCase("No") || name.equalsIgnoreCase("Num"))) {
+                    colNum = c;
+                    break;
+                }
             }
         }
+        if (colNum >= 0 && modelRow < tableModel.getRowCount()) {
+            Object value = tableModel.getValueAt(modelRow, colNum);
+            if (value != null) {
+                String fromModel = value.toString().trim();
+                if (!fromModel.isEmpty()) {
+                    return fromModel;
+                }
+            }
+        }
+        JTable jt = getDataTable();
+        if (jt != null && colNum >= 0) {
+            int viewRow = jt.convertRowIndexToView(modelRow);
+            int viewCol = jt.convertColumnIndexToView(colNum);
+            if (viewRow >= 0 && viewCol >= 0) {
+                Object value = jt.getValueAt(viewRow, viewCol);
+                if (value != null) {
+                    return value.toString().trim();
+                }
+            }
+        }
+        return "";
+    }
+
+    private String buildRowDeleteLogDetail(int modelRow) {
+        if (modelRow < 0) {
+            return "fila desconocida";
+        }
+        String troquel = readTroquelNumberForModelRow(modelRow);
         String detalle = "fila " + (modelRow + 1);
         if (!troquel.isEmpty()) {
             detalle += ", Nº troquel " + troquel;
@@ -1541,14 +1572,20 @@ public class SpreadsheetFrame extends JFrame {
 
     private void deleteSelectedRow() {
         stopEditingBeforeTableMutation();
-        int selectedViewRow = getDataTable().getSelectedRow();
+        JTable table = getDataTable();
+        if (table == null) {
+            return;
+        }
+        int selectedViewRow = table.getSelectedRow();
         if (selectedViewRow == -1) {
             JOptionPane.showMessageDialog(this, "Selecciona una fila para eliminar.");
             return;
         }
-        int modelRow = getDataTable().convertRowIndexToModel(selectedViewRow);
-        pendingRowDeleteLogDetail = buildRowDeleteLogDetail(modelRow);
+        int modelRow = table.convertRowIndexToModel(selectedViewRow);
+        String detalle = buildRowDeleteLogDetail(modelRow);
+        suppressNextDeleteChangeLog = true;
         tableModel.removeRow(modelRow);
+        changeLog.record("Fila(s) eliminada(s)", detalle);
     }
 
     /**
@@ -2956,18 +2993,16 @@ public class SpreadsheetFrame extends JFrame {
                 : count + " filas (" + (from + 1) + ".." + (to + 1) + ")";
             changeLog.record("Fila(s) anadida(s)", detalle);
         } else if (event.getType() == TableModelEvent.DELETE) {
-            String detalle;
-            if (pendingRowDeleteLogDetail != null) {
-                detalle = pendingRowDeleteLogDetail;
-                pendingRowDeleteLogDetail = null;
-            } else {
-                int from = event.getFirstRow();
-                int to = event.getLastRow();
-                int count = Math.max(1, to - from + 1);
-                detalle = count == 1
-                    ? "fila " + (from + 1)
-                    : count + " filas (" + (from + 1) + ".." + (to + 1) + ")";
+            if (suppressNextDeleteChangeLog) {
+                suppressNextDeleteChangeLog = false;
+                return;
             }
+            int from = event.getFirstRow();
+            int to = event.getLastRow();
+            int count = Math.max(1, to - from + 1);
+            String detalle = count == 1
+                ? "fila " + (from + 1)
+                : count + " filas (" + (from + 1) + ".." + (to + 1) + ")";
             changeLog.record("Fila(s) eliminada(s)", detalle);
         }
     }
